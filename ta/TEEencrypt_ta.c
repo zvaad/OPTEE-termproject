@@ -126,16 +126,9 @@ static TEE_Result enc_value(uint32_t param_types, TEE_Param params[4]) {
     // 랜덤 키 생성
     generate_random_key(&key);
 
-    // 랜덤 키 암호화
-    *enc_key = key + root_key;
-
     params[2].memref.size = sizeof(uint8_t);
 
-// 평문 암호화
-    if (ciphertext_len < plaintext_len) {
-        return TEE_ERROR_SHORT_BUFFER;
-    }
-
+    // 평문 암호화
     for (size_t i = 0; i < plaintext_len; i++) {
         if (plaintext[i] >= 'a' && plaintext[i] <= 'z') {
             ciphertext[i] = 'a' + ((plaintext[i] - 'a' + key) % 26);
@@ -146,7 +139,8 @@ static TEE_Result enc_value(uint32_t param_types, TEE_Param params[4]) {
         }
     }
     params[1].memref.size = plaintext_len;
-
+    // 랜덤 키 암호화
+    *enc_key = key + root_key;
     return TEE_SUCCESS;
 }
 
@@ -169,11 +163,7 @@ static TEE_Result dec_value(uint32_t param_types, TEE_Param params[4]) {
     // 암호화된 키를 복호화하여 랜덤 키 복원
     key = enc_key - root_key;
 
- // 암호문 복호화
-    if (plaintext_len < ciphertext_len) {
-        return TEE_ERROR_SHORT_BUFFER;
-    }
-
+    // 암호문 복호화
     for (size_t i = 0; i < ciphertext_len; i++) {
         if (ciphertext[i] >= 'a' && ciphertext[i] <= 'z') {
             plaintext[i] = 'a' + ((ciphertext[i] - 'a' - key + 26) % 26);
