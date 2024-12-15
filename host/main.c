@@ -36,6 +36,7 @@
 /* To the the UUID (found the the TA's h-file(s)) */
 #include <TEEencrypt_ta.h>
 
+
 void create_output_filename(const char *input_file, const char *suffix, char *output_file, size_t size) {
     char base[256] = {0};
     char *dot = strrchr(input_file, '.');
@@ -48,11 +49,13 @@ void create_output_filename(const char *input_file, const char *suffix, char *ou
         snprintf(output_file, size, "%s_%s", input_file, suffix);
     }
 }
-void encrypt_file(const char *input_file, TEEC_Context *ctx, TEEC_Session *sess) {
-    char plaintext[1024] = {0};
-    char ciphertext[1024] = {0};
+void encrypt_file(const char *input_file, const char *algorithm, TEEC_Context *ctx, TEEC_Session *sess) {
+    char plaintext[245] = {0};
+    char ciphertext[256] = {0};
     uint8_t enc_key;
-    size_t plaintext_len, ciphertext_len = sizeof(ciphertext), enc_key_len = sizeof(enc_key);
+    size_t plaintext_len = 245;
+    size_t ciphertext_len = 256;
+    size_t enc_key_len = sizeof(enc_key);
     TEEC_Operation op;
 
     char cipher_filename[256] = {0};
@@ -70,29 +73,50 @@ void encrypt_file(const char *input_file, TEEC_Context *ctx, TEEC_Session *sess)
 
     // 암호화 요청 설정
     memset(&op, 0, sizeof(TEEC_Operation));
-    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, 
-                                      TEEC_MEMREF_TEMP_OUTPUT,
-                                      TEEC_MEMREF_TEMP_OUTPUT,
-                                      TEEC_NONE);
+    if (strcmp(algorithm, "Caesar") == 0) {
+        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,   // 평문 입력
+                                          TEEC_MEMREF_TEMP_OUTPUT,  // 암호문 출력
+                                          TEEC_MEMREF_TEMP_OUTPUT,  // 암호화된 키 출력
+                                          TEEC_NONE);
+	op.params[0].tmpref.buffer = plaintext;
+        op.params[0].tmpref.size = plaintext_len;
+        op.params[1].tmpref.buffer = ciphertext;
+        op.params[1].tmpref.size = ciphertext_len;
+        op.params[2].tmpref.buffer = &enc_key;
+        op.params[2].tmpref.size = enc_key_len;
 
-    op.params[0].tmpref.buffer = plaintext;
-    op.params[0].tmpref.size = plaintext_len;
-    op.params[1].tmpref.buffer = ciphertext;
-    op.params[1].tmpref.size = ciphertext_len;
-    op.params[2].tmpref.buffer = &enc_key;
-    op.params[2].tmpref.size = enc_key_len;
+	// CAESAR 암호화 수행
+        printf("Invoking TA for Caesar encryption...\n");
+        TEEC_Result res = TEEC_InvokeCommand(sess, TA_TEEencrypt_CMD_ENC_VALUE, &op, NULL);
+        if (res != TEEC_SUCCESS) {
+            errx(1, "TEEC_InvokeCommand failed with code 0x%x", res);
+        }
 
-   // 암호화 수행
-    printf("Invoking TA for encryption...\n");
-    TEEC_Result res = TEEC_InvokeCommand(sess, TA_TEEencrypt_CMD_ENC_VALUE, &op, NULL);
-    if (res != TEEC_SUCCESS)
-        errx(1, "TEEC_InvokeCommand failed with code 0x%x", res);
+   } else if (strcmp(algorithm, "RSA") == 0) {
+        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,   // 평문 입력
+                                          TEEC_MEMREF_TEMP_OUTPUT, // 암호문 출력
+                                          TEEC_NONE,
+                                          TEEC_NONE);
+        op.params[0].tmpref.buffer = plaintext;
+        op.params[0].tmpref.size = plaintext_len;
+        op.params[1].tmpref.buffer = ciphertext;
+        op.params[1].tmpref.size = ciphertext_len;
+
+
+        printf("Invoking TA for RSA encryption...\n");
+        TEEC_Result res = TEEC_InvokeCommand(sess, TA_TEEencrypt_CMD_RSA_ENC, &op, NULL);
+        
+	if (res != TEEC_SUCCESS) {
+            errx(1, "TEEC_InvokeCommand failed with code 0x%x", res);
+        }
+   } else {
+        printf("Unsupported algorithm: %s\n", algorithm);
+        return;
+   }
 
     ciphertext_len = op.params[1].tmpref.size;
-    enc_key = *(uint8_t *)op.params[2].tmpref.buffer;
-
+ 
     printf("Ciphertext: %s\n", ciphertext);
-    printf("Encrypted Key: %d\n", enc_key);
 
     // 결과 파일 이름 생성
     create_output_filename(input_file, "ciphertext", cipher_filename, sizeof(cipher_filename));
@@ -106,13 +130,15 @@ void encrypt_file(const char *input_file, TEEC_Context *ctx, TEEC_Session *sess)
     fclose(cipher_file);
     printf("Ciphertext saved to %s\n", cipher_filename);
 
-    FILE *key_file = fopen(key_filename, "w");
-    if (!key_file) {
-        errx(1, "Failed to open %s for writing", key_filename);
+    if (strcmp(algorithm, "Caesar") == 0) {
+        FILE *key_file = fopen(key_filename, "w");
+        if (!key_file) {
+            errx(1, "Failed to open %s for writing", key_filename);
+        }
+        fprintf(key_file, "%d", enc_key);
+        fclose(key_file);
+        printf("Encrypted key saved to %s\n", key_filename);
     }
-    fprintf(key_file, "%d", enc_key);
-    fclose(key_file);
-    printf("Encrypted key saved to %s\n", key_filename);
 }
 
 void decrypt_file(const char *ciphertext_file, const char *key_file, TEEC_Context *ctx, TEEC_Session *sess) {
@@ -183,20 +209,20 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    TEEC_Result res;
+
     TEEC_Context ctx;
     TEEC_Session sess;
     TEEC_UUID uuid = TA_TEEencrypt_UUID;
     uint32_t err_origin;
 
-    res = TEEC_InitializeContext(NULL, &ctx);
+    TEEC_InitializeContext(NULL, &ctx);
 
 
-    res = TEEC_OpenSession(&ctx, &sess, &uuid, TEEC_LOGIN_PUBLIC, NULL, NULL, &err_origin);
+    TEEC_OpenSession(&ctx, &sess, &uuid, TEEC_LOGIN_PUBLIC, NULL, NULL, &err_origin);
     
 
     if (strcmp(argv[1], "-e") == 0) {
-        encrypt_file(argv[2], &ctx, &sess);
+        encrypt_file(argv[2], argv[3], &ctx, &sess);
     } else if (strcmp(argv[1], "-d") == 0 && argc == 4) {
         decrypt_file(argv[2], argv[3], &ctx, &sess);
     } else {

@@ -29,9 +29,11 @@
 #include <tee_internal_api_extensions.h>
 #include <string.h>
 #include <TEEencrypt_ta.h>
+
+
 static uint8_t key;
 static const uint8_t root_key = 5;
-
+static TEE_ObjectHandle rsa_keypair;
 /*
  * Called when the instance of the TA is created. This is the first call in
  * the TA.
@@ -50,6 +52,8 @@ TEE_Result TA_CreateEntryPoint(void)
 void TA_DestroyEntryPoint(void)
 {
 	DMSG("has been called");
+	if (rsa_keypair)
+		TEE_FreeTransientObject(rsa_keypair);
 }
 
 /*
@@ -94,6 +98,85 @@ void TA_CloseSessionEntryPoint(void __maybe_unused *sess_ctx)
 {
 	(void)&sess_ctx; /* Unused parameter */
 	IMSG("Goodbye!\n");
+}
+
+static TEE_Result generate_rsa_key_pair(void) {
+    TEE_Result res;
+
+    // RSA 키 객체 생성
+    res = TEE_AllocateTransientObject(TEE_TYPE_RSA_KEYPAIR, 2048, &rsa_keypair);
+    if (res != TEE_SUCCESS) {
+        EMSG("Failed to allocate RSA keypair: 0x%x", res);
+        return res;
+    }
+
+    // RSA 키 생성
+    res = TEE_GenerateKey(rsa_keypair, 2048, NULL, 0);
+    if (res != TEE_SUCCESS) {
+        EMSG("Failed to generate RSA key: 0x%x", res);
+        TEE_FreeTransientObject(rsa_keypair);
+        return res;
+    }
+
+    DMSG("RSA key pair generated successfully.");
+    return TEE_SUCCESS;
+}
+
+static TEE_Result rsa_encrypt(uint32_t param_types, TEE_Param params[4]) {
+    if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+                                       TEE_PARAM_TYPE_MEMREF_OUTPUT,
+                                       TEE_PARAM_TYPE_NONE,
+                                       TEE_PARAM_TYPE_NONE)) {
+        return TEE_ERROR_BAD_PARAMETERS;
+    }
+
+    char *plaintext = (char *)params[0].memref.buffer;  // 평문 입력
+    size_t plaintext_len = params[0].memref.size;
+    char *ciphertext = (char *)params[1].memref.buffer; // 암호문 출력
+    size_t ciphertext_len = params[1].memref.size;
+
+    TEE_Result res;
+    TEE_OperationHandle operation = NULL;
+    // RSA 키 페어 생성
+    res = generate_rsa_key_pair();
+    if (res != TEE_SUCCESS) {
+        return res;
+    }
+
+    // RSA Operation 생성
+    res = TEE_AllocateOperation(&operation, TEE_ALG_RSAES_PKCS1_V1_5, TEE_MODE_ENCRYPT, 2048);
+    if (res != TEE_SUCCESS) {
+        EMSG("Failed to allocate operation: 0x%x", res);
+        return res;
+    }
+
+    // 키 설정
+    res = TEE_SetOperationKey(operation, rsa_keypair);
+    if (res != TEE_SUCCESS) {
+        EMSG("Failed to set key: 0x%x", res);
+        TEE_FreeOperation(operation);
+        return res;
+    }
+
+    uint32_t cipher_len_32 = (uint32_t)ciphertext_len;
+
+    // RSA 암호화 수행
+    res = TEE_AsymmetricEncrypt(operation, NULL, 0,
+                                plaintext, plaintext_len,
+                                ciphertext, &cipher_len_32);
+    if (res != TEE_SUCCESS) {
+        EMSG("RSA encryption failed: 0x%x", res);
+        TEE_FreeOperation(operation);
+        return res;
+    }
+    // 암호문 크기 갱신
+    params[1].memref.size = (size_t)cipher_len_32;
+
+    DMSG("Encryption successful. Ciphertext size: %zu", params[1].memref.size);
+
+    // Operation 해제
+    TEE_FreeOperation(operation);
+    return TEE_SUCCESS;
 }
 
 static void generate_random_key(uint8_t *keyBuffer) {
@@ -178,6 +261,9 @@ static TEE_Result dec_value(uint32_t param_types, TEE_Param params[4]) {
     return TEE_SUCCESS;
 }
 
+
+
+
 /*
  * Called when a TA is invoked. sess_ctx hold that value that was
  * assigned by TA_OpenSessionEntryPoint(). The rest of the paramters
@@ -195,6 +281,9 @@ TEE_Result TA_InvokeCommandEntryPoint(void __maybe_unused *sess_ctx,
 
 	case TA_TEEencrypt_CMD_DEC_VALUE:
 		return dec_value(param_types, params);
+
+	case TA_TEEencrypt_CMD_RSA_ENC:
+        	return rsa_encrypt(param_types, params);
 
 	default:
 		return TEE_ERROR_BAD_PARAMETERS;
